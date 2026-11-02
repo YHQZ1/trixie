@@ -24,7 +24,11 @@ final class RequestBox: @unchecked Sendable {
 /// say next as your question, finishing when you pause.
 @MainActor
 public final class WakeListener {
-    public var onWake: (() -> Void)?
+    /// Called when she starts hearing a question. `followUp` is true when you just carried on
+    /// the conversation without saying her name.
+    public var onWake: ((_ followUp: Bool) -> Void)?
+    public var onFollowUpOpen: (() -> Void)?
+    public var onFollowUpExpired: (() -> Void)?
     public var onPartialCommand: ((String) -> Void)?
     public var onCommand: ((String) -> Void)?
     public var onCancel: (() -> Void)?
@@ -36,7 +40,7 @@ public final class WakeListener {
     private var task: SFSpeechRecognitionTask?
     private var activeRequest: SFSpeechAudioBufferRecognitionRequest?
 
-    private enum State { case scanning, capturing }
+    private enum State { case scanning, followUp, capturing }
     private var state = State.scanning
     private var sessionStart = Date()
     private var wakeTime = Date()
@@ -45,6 +49,7 @@ public final class WakeListener {
     private var committed = ""        // earlier pieces of the question (you paused mid-sentence)
     private var segment = ""          // the piece currently being heard
     private var ticker: Timer?
+    private var followUpDeadline = Date.distantPast
 
     // "hey trixie" (plus the ways a recogniser tends to mis-hear the name), or her name on its own
     // at the very start of a phrase: "Trixie, what's the time?"
@@ -60,6 +65,12 @@ public final class WakeListener {
         recognizer = r
     }
 
+    /// "uh", "hmm" and friends shouldn't start a question.
+    static func isFiller(_ text: String) -> Bool {
+        let words = text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)
+        return words.isEmpty || (words.count == 1 && ["uh", "um", "uhh", "umm", "hmm", "mm", "mmm", "ah", "er", "erm"].contains(words[0]))
+    }
+
     /// The words after the last "hey Trixie" in `text`, or nil if the wake phrase isn't there.
     static func command(after text: String) -> String? {
         let ns = text as NSString
@@ -71,9 +82,12 @@ public final class WakeListener {
 
     // MARK: - Start and stop
 
-    public func start() throws {
+    /// Start listening. With `followUpWindow`, anything you say in the next few seconds counts as
+    /// your next question (no "hey Trixie" needed); after that she goes back to waiting for her name.
+    public func start(followUpWindow: TimeInterval? = nil) throws {
         guard !isRunning else { return }
-        state = .scanning
+        state = followUpWindow == nil ? .scanning : .followUp
+        if let window = followUpWindow { followUpDeadline = Date().addingTimeInterval(window) }
         command = ""; committed = ""; segment = ""
         beginSession()
 
@@ -89,6 +103,7 @@ public final class WakeListener {
             MainActor.assumeIsolated { self?.tick() }
         }
         isRunning = true
+        if followUpWindow != nil { onFollowUpOpen?() }
     }
 
     public func stop() {
@@ -137,12 +152,22 @@ public final class WakeListener {
 
         if let text {
             let afterName = Self.command(after: text)    // nil if her name isn't in this transcript
-            if state == .scanning {
+            if state == .followUp {
+                // Mid-conversation: whatever you say is the question (unless it's just "uh").
+                let spoken = afterName ?? text
+                if afterName != nil || !Self.isFiller(spoken) {
+                    state = .capturing
+                    wakeTime = Date(); lastChange = Date()
+                    committed = ""; segment = spoken; command = spoken
+                    onWake?(afterName == nil)
+                    if !spoken.isEmpty { onPartialCommand?(spoken) }
+                }
+            } else if state == .scanning {
                 if let spoken = afterName {
                     state = .capturing
                     wakeTime = Date(); lastChange = Date()
                     committed = ""; segment = spoken; command = spoken
-                    onWake?()
+                    onWake?(false)
                     if !spoken.isEmpty { onPartialCommand?(spoken) }
                 } else if ProcessInfo.processInfo.environment["CLAUDE_DEBUG"] != nil, !text.isEmpty {
                     ClaudeSession.debug("heard: \(text.suffix(70))")
@@ -169,7 +194,7 @@ public final class WakeListener {
     }
 
     private func restartIfStillScanning() {
-        if isRunning, state == .scanning { beginSession() }
+        if isRunning, state == .scanning || state == .followUp { beginSession() }
     }
 
     // MARK: - Timing
@@ -180,6 +205,11 @@ public final class WakeListener {
         case .scanning:
             // Recognisers don't like running forever, so quietly start a new session now and then.
             if now.timeIntervalSince(sessionStart) > 55 { beginSession() }
+        case .followUp:
+            if now >= followUpDeadline {          // nobody spoke: back to waiting for her name
+                state = .scanning
+                onFollowUpExpired?()
+            }
         case .capturing:
             let quiet = now.timeIntervalSince(lastChange)
             if !command.isEmpty, quiet > 1.4 { finishCapture() }                       // you paused: that's the question

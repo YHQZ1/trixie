@@ -31,6 +31,8 @@ final class Controller {
     let wake: WakeListener?
     var wakeEnabled = UserDefaults.standard.object(forKey: "wakeEnabled") as? Bool ?? true
     var busy = false                  // a conversation turn is in progress, so don't listen for the wake phrase
+    var followUpPending = false       // after her answer, keep listening for a reply without her name
+    let followUpSeconds = Double(env["CLAUDE_FOLLOWUP_SECONDS"] ?? "") ?? 8   // 0 turns follow-ups off
     var wakeResume: Task<Void, Never>?
     var turn: Task<Void, Never>?
     var settle: Task<Void, Never>?
@@ -45,13 +47,25 @@ final class Controller {
         listener.onPartial = { text in
             print("\r\u{1B}[2K" + dim("… \(text)"), terminator: ""); fflush(stdout)
         }
-        wake?.onWake = { [weak self] in
+        wake?.onWake = { [weak self] followUp in
             guard let self else { return }
             self.busy = true
             self.settle?.cancel()
             self.pet.show(); self.mood(.listening); self.touch()
-            NSSound(named: "Tink")?.play()
-            print(dim("heard “hey Trixie”, listening…"))
+            if !followUp { NSSound(named: "Tink")?.play() }
+            print(dim(followUp ? "listening…" : "heard “hey Trixie”, listening…"))
+        }
+        wake?.onFollowUpOpen = { [weak self] in
+            guard let self else { return }
+            self.settle?.cancel()
+            self.mood(.listening); self.touch()     // hand stays at her ear: she's still listening
+            print(dim("(still listening, go ahead)"))
+        }
+        wake?.onFollowUpExpired = { [weak self] in
+            guard let self else { return }
+            if self.pet.model.mood == .listening { self.mood(.idle) }
+            self.touch()
+            print(dim("(conversation over, say “hey Trixie” to start again)"))
         }
         wake?.onPartialCommand = { text in
             print("\r\u{1B}[2K" + dim("… \(text)"), terminator: ""); fflush(stdout)
@@ -60,6 +74,12 @@ final class Controller {
             guard let self else { return }
             print("\r\u{1B}[2K", terminator: "")
             NSSound(named: "Pop")?.play()
+            // "Thanks", "that's all", "okay": end the conversation without spending a question on it.
+            if Self.isDismissal(text) {
+                print(dim("you> \(text)  (ok, ending the conversation)"))
+                self.finished(followUp: false)
+                return
+            }
             self.mood(.thinking); self.touch()
             self.ask(text)
         }
@@ -95,12 +115,15 @@ final class Controller {
         wakeResume = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard let self, !Task.isCancelled, self.shouldListenForWake, !wake.isRunning else { return }
-            do { try wake.start() } catch { print("Couldn't start always-on listening: \(error.localizedDescription)") }
+            let window: TimeInterval? = self.followUpPending ? self.followUpSeconds : nil
+            self.followUpPending = false
+            do { try wake.start(followUpWindow: window) } catch { print("Couldn't start always-on listening: \(error.localizedDescription)") }
         }
     }
 
     func setWakeEnabled(_ on: Bool) {
         wakeEnabled = on
+        if !on { followUpPending = false }
         UserDefaults.standard.set(on, forKey: "wakeEnabled")
         print(dim(on ? "Listening for “hey Trixie” again." : "No longer listening for “hey Trixie”."))
         updateWake()
@@ -139,9 +162,20 @@ final class Controller {
         touch()
     }
 
-    /// All done: a short happy moment, then back to idle.
-    private func finished() {
+    /// True for short sign-offs that just end the conversation.
+    static func isDismissal(_ text: String) -> Bool {
+        let words = text.lowercased().split(whereSeparator: { !($0.isLetter || $0 == "'") }).map(String.init)
+        let cleaned = words.filter { $0 != "trixie" && $0 != "hey" }.joined(separator: " ")
+        return ["thanks", "thank you", "thanks a lot", "thank you so much", "okay thanks", "ok thanks", "okay thank you",
+                "cool thanks", "that's all", "that is all", "that's it", "never mind", "nevermind", "bye", "goodbye",
+                "okay", "ok", "cool", "nice", "great", "got it", "alright", "all right", "okay cool", "okay great"].contains(cleaned)
+    }
+
+    /// All done: a short happy moment, then back to idle. After a real answer she keeps
+    /// listening for a reply (the follow-up window); pass `followUp: false` to end the conversation.
+    func finished(followUp: Bool = true) {
         busy = false
+        followUpPending = followUp && wakeEnabled && wake != nil && followUpSeconds > 0
         updateWake()
         mood(.happy)
         settle?.cancel()
@@ -158,6 +192,7 @@ final class Controller {
         turn?.cancel(); session.cancel(); settle?.cancel()
         turnRunning = false
         busy = true
+        followUpPending = false
         wakeResume?.cancel(); wake?.stop()      // the hotkey takes over the microphone
         let speaker = self.speaker
         Task { await speaker.stop() }
