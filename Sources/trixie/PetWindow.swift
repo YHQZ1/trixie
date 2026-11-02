@@ -99,9 +99,11 @@ final class StatusMenu: NSObject {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let onShow: () -> Void
     private let onQuit: () -> Void
+    private let onWakeToggle: (Bool) -> Void
+    private let wakeItem = NSMenuItem(title: "Listen for “Hey Trixie”", action: nil, keyEquivalent: "")
 
-    init(onShow: @escaping () -> Void, onQuit: @escaping () -> Void) {
-        self.onShow = onShow; self.onQuit = onQuit
+    init(wakeOn: Bool, onShow: @escaping () -> Void, onWakeToggle: @escaping (Bool) -> Void, onQuit: @escaping () -> Void) {
+        self.onShow = onShow; self.onQuit = onQuit; self.onWakeToggle = onWakeToggle
         super.init()
         item.button?.image = Self.icon()
         let menu = NSMenu()
@@ -109,11 +111,19 @@ final class StatusMenu: NSObject {
         show.target = self
         let quit = NSMenuItem(title: "Quit Trixie", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
-        menu.addItem(show); menu.addItem(.separator()); menu.addItem(quit)
+        wakeItem.target = self
+        wakeItem.action = #selector(toggleWake)
+        wakeItem.state = wakeOn ? .on : .off
+        menu.addItem(show); menu.addItem(wakeItem); menu.addItem(.separator()); menu.addItem(quit)
         item.menu = menu
     }
 
     @objc private func showPet() { onShow() }
+    @objc private func toggleWake() {
+        let on = wakeItem.state != .on
+        wakeItem.state = on ? .on : .off
+        onWakeToggle(on)
+    }
     @objc private func quitApp() { onQuit() }
 
     /// A tiny pixel version of the pet, drawn as a template so it fits light and dark menu bars.

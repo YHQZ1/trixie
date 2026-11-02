@@ -1,8 +1,8 @@
 import AppKit
 import ClaudeKit
 
-// Step 3: the pet. Hold the hotkey and a little creature appears, listens, thinks,
-// talks back and then goes to sleep. Pressing the hotkey again interrupts it.
+// Trixie, the pet. Hold the hotkey, or just say "hey Trixie", and a little creature appears,
+// listens, thinks, talks back and then goes to sleep. Pressing the hotkey interrupts her.
 //
 // Settings (environment variables):
 //   CLAUDE_HOTKEY=option+space   hold-to-talk shortcut
@@ -28,6 +28,10 @@ final class Controller {
     let speaker: Speaker
     let listener: VoiceListener
     let pet: PetWindowController
+    let wake: WakeListener?
+    var wakeEnabled = UserDefaults.standard.object(forKey: "wakeEnabled") as? Bool ?? true
+    var busy = false                  // a conversation turn is in progress, so don't listen for the wake phrase
+    var wakeResume: Task<Void, Never>?
     var turn: Task<Void, Never>?
     var settle: Task<Void, Never>?
     var recording = false
@@ -36,10 +40,33 @@ final class Controller {
     var lastActivity = Date()
     var timer: Timer?
 
-    init(session: ClaudeSession, speaker: Speaker, listener: VoiceListener, pet: PetWindowController) {
-        self.session = session; self.speaker = speaker; self.listener = listener; self.pet = pet
+    init(session: ClaudeSession, speaker: Speaker, listener: VoiceListener, pet: PetWindowController, wake: WakeListener?) {
+        self.session = session; self.speaker = speaker; self.listener = listener; self.pet = pet; self.wake = wake
         listener.onPartial = { text in
             print("\r\u{1B}[2K" + dim("… \(text)"), terminator: ""); fflush(stdout)
+        }
+        wake?.onWake = { [weak self] in
+            guard let self else { return }
+            self.busy = true
+            self.settle?.cancel()
+            self.pet.show(); self.mood(.listening); self.touch()
+            NSSound(named: "Tink")?.play()
+            print(dim("heard “hey Trixie”, listening…"))
+        }
+        wake?.onPartialCommand = { text in
+            print("\r\u{1B}[2K" + dim("… \(text)"), terminator: ""); fflush(stdout)
+        }
+        wake?.onCommand = { [weak self] text in
+            guard let self else { return }
+            print("\r\u{1B}[2K", terminator: "")
+            NSSound(named: "Pop")?.play()
+            self.mood(.thinking); self.touch()
+            self.ask(text)
+        }
+        wake?.onCancel = { [weak self] in
+            guard let self else { return }
+            print("\r\u{1B}[2K" + dim("(heard her name but no question)"))
+            self.busy = false; self.mood(.idle); self.updateWake()
         }
         // Fall asleep after a quiet while, then go away.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -48,6 +75,36 @@ final class Controller {
     }
 
     private func mood(_ m: PetMood) { pet.model.mood = m }
+
+    // MARK: - Always-on "hey Trixie"
+
+    var shouldListenForWake: Bool {
+        wake != nil && wakeEnabled && !busy && !recording && !turnRunning && !speaking
+    }
+
+    /// Start or stop the wake-word listening to match what Trixie is doing right now.
+    func updateWake() {
+        guard let wake else { return }
+        wakeResume?.cancel()
+        if !shouldListenForWake {
+            if wake.isRunning { wake.stop() }
+            return
+        }
+        if wake.isRunning { return }
+        // A short pause first, so the tail of her own voice isn't mistaken for you.
+        wakeResume = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard let self, !Task.isCancelled, self.shouldListenForWake, !wake.isRunning else { return }
+            do { try wake.start() } catch { print("Couldn't start always-on listening: \(error.localizedDescription)") }
+        }
+    }
+
+    func setWakeEnabled(_ on: Bool) {
+        wakeEnabled = on
+        UserDefaults.standard.set(on, forKey: "wakeEnabled")
+        print(dim(on ? "Listening for “hey Trixie” again." : "No longer listening for “hey Trixie”."))
+        updateWake()
+    }
     private func touch() { lastActivity = Date() }
 
     func showPet() {
@@ -76,6 +133,8 @@ final class Controller {
 
     /// All done: a short happy moment, then back to idle.
     private func finished() {
+        busy = false
+        updateWake()
         mood(.happy)
         settle?.cancel()
         settle = Task { @MainActor [weak self] in
@@ -90,6 +149,8 @@ final class Controller {
         // Pressing again interrupts whatever Claude is saying or doing.
         turn?.cancel(); session.cancel(); settle?.cancel()
         turnRunning = false
+        busy = true
+        wakeResume?.cancel(); wake?.stop()      // the hotkey takes over the microphone
         let speaker = self.speaker
         Task { await speaker.stop() }
         pet.show()
@@ -117,30 +178,41 @@ final class Controller {
                 let level = String(format: "%.3f", listener.peakLevel)
                 print(dim("(didn't catch anything — mic peak \(level), recogniser \(listener.localeIdentifier) available=\(listener.isAvailable), error: \(listener.lastError ?? "none"))"))
                 mood(.idle)
+                busy = false; updateWake()
                 return
             }
-            print("you> \(text)")
-            print("claude> ", terminator: ""); fflush(stdout)
-            turnRunning = true
-            let r = await runTurn(
-                text, session: session, speaker: speaker,
-                minSentence: await speaker.usesCloud ? 34 : 14,
-                onText: { print($0, terminator: ""); fflush(stdout) },
-                onTool: { [self] name in
-                    print(dim("[\(name)] "), terminator: ""); fflush(stdout)
-                    Task { @MainActor in if !self.speaking { self.mood(.working) } }
-                }
-            )
-            print()
-            if r.failed && !Task.isCancelled { print(dim("(something went wrong — is `claude` installed and logged in?)")) }
-            if let u = r.usage { print(dim(u)) }
-            print()
-            turnRunning = false
-            touch()
-            // If the voice is already quiet (or never spoke), celebrate now; otherwise
-            // the "finished speaking" event does it.
-            if !speaking, !Task.isCancelled { finished() }
+            await runAsk(text)
         }
+    }
+
+    /// Ask Trixie something typed or spoken by any route and speak the answer.
+    func ask(_ text: String) {
+        turn = Task { [self] in await runAsk(text) }
+    }
+
+    func runAsk(_ text: String) async {
+        busy = true
+        print("you> \(text)")
+        print("Trixie> ", terminator: ""); fflush(stdout)
+        turnRunning = true
+        let r = await runTurn(
+            text, session: session, speaker: speaker,
+            minSentence: await speaker.usesCloud ? 34 : 14,
+            onText: { print($0, terminator: ""); fflush(stdout) },
+            onTool: { [self] name in
+                print(dim("[\(name)] "), terminator: ""); fflush(stdout)
+                Task { @MainActor in if !self.speaking { self.mood(.working) } }
+            }
+        )
+        print()
+        if r.failed && !Task.isCancelled { print(dim("(something went wrong — is `claude` installed and logged in?)")) }
+        if let u = r.usage { print(dim(u)) }
+        print()
+        turnRunning = false
+        touch()
+        // If the voice is already quiet (or never spoke), celebrate now; otherwise
+        // the "finished speaking" event does it.
+        if !speaking, !Task.isCancelled { finished() }
     }
 }
 
@@ -182,12 +254,15 @@ Task { @MainActor in
     if let problem = await VoiceListener.requestPermissions() { print(problem); exit(1) }
 
     let pet = PetWindowController()
-    let controller = Controller(session: session, speaker: speaker, listener: listener, pet: pet)
+    let wake = WakeListener(locale: Locale(identifier: env["CLAUDE_LANG"] ?? "en-IN"))
+    let controller = Controller(session: session, speaker: speaker, listener: listener, pet: pet, wake: wake)
     await speaker.setSpeakingHandler { on in
         Task { @MainActor in controller.speakingChanged(on) }
     }
     let menu = StatusMenu(
+        wakeOn: controller.wakeEnabled && wake != nil,
         onShow: { controller.showPet() },
+        onWakeToggle: { controller.setWakeEnabled($0) },
         onQuit: { Task { await speaker.shutdown(); exit(0) } }
     )
     guard let hotkey = HotKey(keyCode: combo.keyCode, modifiers: combo.modifiers) else {
@@ -202,6 +277,12 @@ Task { @MainActor in
     print(dim("Speech recognition runs \(listener.runsOnDevice ? "on your Mac" : "using Apple's servers"). Reading only: \(config.tools.joined(separator: ", ")).\n"))
     print(dim("Voice: \(await speaker.engineName)\n"))
 
+    if wake == nil {
+        print(dim("“Hey Trixie” needs on-device speech recognition, which isn't available here. The hotkey still works."))
+    } else if controller.wakeEnabled {
+        print(dim("Always listening for “hey Trixie” (on your Mac only). Switch it off from the menu bar icon."))
+    }
     controller.showPet()   // say hello once so you can see it's alive
+    controller.updateWake()
 }
 app.run()
