@@ -14,22 +14,43 @@ public struct ClaudeConfig {
     /// Folder Claude works in. File tools are limited to this folder plus `extraDirectories`.
     public var workingDirectory: URL
     public var extraDirectories: [URL]
+    /// Places she may NOT read, even inside the folder above (patterns like "~/.ssh/**").
+    public var blocked: [String]
     /// Built-in tools Claude may use. Read-only for now; anything that changes
     /// things will come later, behind a confirmation.
     public var tools: [String]
     public var voiceStyle: String
 
     public init(
-        workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Developer"),
+        workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         extraDirectories: [URL] = [],
+        blocked: [String] = ClaudeConfig.defaultBlocked,
         tools: [String] = ["Read", "Glob", "Grep"],
         voiceStyle: String = ClaudeConfig.defaultVoiceStyle
     ) {
         self.workingDirectory = workingDirectory
         self.extraDirectories = extraDirectories
+        self.blocked = blocked
         self.tools = tools
         self.voiceStyle = voiceStyle
     }
+
+    /// Keys, credentials, shell history, app data and ID documents stay off-limits even though she
+    /// can read the rest of your home folder. Change with CLAUDE_BLOCK_EXTRA or CLAUDE_BLOCK_NONE=1.
+    public static let defaultBlocked: [String] = [
+        // keys and cloud credentials
+        "~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.kube/**", "~/.docker/**", "~/.config/gh/**",
+        "~/.cloudflared/**", "~/.ngrok/**", "~/.pgadmin/**", "~/.mongodb/**", "~/.netrc", "~/.npmrc", "~/.pypirc",
+        // other AI tools' stored sessions and logins
+        "~/.claude/**", "~/.claude.json", "~/.copilot/**", "~/.gemini/**",
+        // shell and database history
+        "~/.zsh_history", "~/.bash_history", "~/.python_history", "~/.node_repl_history",
+        "~/.mysql_history", "~/.psql_history", "~/.rediscli_history", "~/.lesshst", "~/.pig_history",
+        // app data and ID documents
+        "~/Library/**", "~/Documents/Personal Documents/**",
+        // secrets wherever they sit
+        "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/id_rsa*", "**/id_ed25519*",
+    ]
 
     public static let defaultVoiceStyle = """
     Your name is Trixie. You are a little pixel pet on Uttkarsh's desktop, powered by Claude, and he talks to \
@@ -45,7 +66,8 @@ public struct ClaudeConfig {
     - Usually one to three short sentences. A quick follow-up question now and then is fine, but not every time.
     - If code or a long list is needed, say you'll put it on screen and keep the spoken part short.
     - Right now you can only read files, not change anything; if he asks for a change, say you can't do \
-    that yet. Check his files instead of guessing.
+    that yet. Check his files instead of guessing. Some private places (keys, credentials, ID documents) \
+    are blocked for you; if a read is denied, just say that spot is protected.
     - Never go quiet while you work: BEFORE you use any tool, first say one short natural line about what \
     you're about to do, like "Let me check the docs" or "One sec, looking at that now", and only then use \
     the tool. Keep that line under ten words and vary it. After the tool results come back, give the answer.
@@ -103,6 +125,44 @@ public final class ClaudeSession: @unchecked Sendable {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }.map { URL(fileURLWithPath: $0) }
     }
 
+    /// A short map of the folders under her working folder, so she goes straight to the right place
+    /// instead of guessing names. Her search tool only lists files and is case-sensitive, so without
+    /// this she can miss a folder like "Academic" by searching for "academic".
+    func homeMapPrompt() -> String {
+        let fm = FileManager.default
+        let root = config.workingDirectory
+        let home = fm.homeDirectoryForCurrentUser.path
+        // Directory prefixes she's not allowed into, from the blocked list ("~/Documents/Personal Documents/**").
+        let blockedPrefixes = config.blocked.compactMap { rule -> String? in
+            guard rule.hasPrefix("~/") else { return nil }
+            var p = home + "/" + rule.dropFirst(2)
+            if p.hasSuffix("/**") { p = String(p.dropLast(3)) }
+            return p
+        }
+        func visibleFolders(in dir: URL) -> [URL] {
+            let items = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey],
+                                                      options: [.skipsHiddenFiles])) ?? []
+            return items
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+                .filter { url in !blockedPrefixes.contains { url.path == $0 || url.path.hasPrefix($0 + "/") } }
+                .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+        }
+        let skip: Set<String> = ["Library", "Applications", "Movies", "Music", "Pictures", "Public"]
+        var lines: [String] = []
+        for top in visibleFolders(in: root) where !skip.contains(top.lastPathComponent) {
+            let subs = visibleFolders(in: top).prefix(14).map { $0.lastPathComponent }
+            lines.append(subs.isEmpty ? "\(top.path)" : "\(top.path): \(subs.joined(separator: ", "))")
+        }
+        guard !lines.isEmpty else { return "" }
+        return """
+        Map of his folders under \(root.path) (folders only, two levels, private places left out). Use it to go \
+        straight to the right place. Your search tool only lists files and is case-sensitive, so don't guess \
+        names: point it at a folder from this map with its exact capitalisation, for example path set to that \
+        folder and the pattern **/*. If something isn't in the map or isn't there, say you couldn't find it.
+        \(lines.joined(separator: "\n"))
+        """
+    }
+
     private func arguments() -> [String] {
         var args = [
             "-p",
@@ -110,8 +170,11 @@ public final class ClaudeSession: @unchecked Sendable {
             // Keep the setup small and fast (about 5k tokens instead of 20k+).
             "--tools", config.tools.joined(separator: ","),
             "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
-            "--append-system-prompt", config.voiceStyle,
+            "--append-system-prompt", config.voiceStyle + "\n" + homeMapPrompt(),
         ]
+        if !config.blocked.isEmpty {
+            args += ["--disallowedTools"] + config.blocked.map { "Read(\($0))" }
+        }
         for dir in config.extraDirectories { args += ["--add-dir", dir.path] }
         if let id = sessionID { args += ["--resume", id] }
         return args

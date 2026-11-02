@@ -10,7 +10,7 @@ A little pixel pet that lives on your Mac desktop. Say **"hey Trixie"** (or hold
 - **Real conversations.** After she answers she keeps listening for a few seconds, so you can just reply without saying her name again. Say "thanks", "that's all" or "bye" to end it (that costs no question), or stay quiet and she goes back to waiting for "hey Trixie".
 - **A pet with moods.** She pops in with a hop, perks up and listens, looks up while thinking, "types" while reading your files, moves her mouth while talking, and falls asleep when you leave her alone. Her eyes follow your cursor, and clicks pass through everything except the creature itself.
 - **Natural, streaming speech.** She says a short line before she goes off to read files, then speaks the answer sentence by sentence as it arrives. Choose a cloud voice ([ElevenLabs](https://elevenlabs.io)) or a free local one ([Kokoro](https://github.com/thewh1teagle/kokoro-onnx)). If the cloud voice fails or hits your monthly cap, she falls back to the local one automatically.
-- **Careful by default.** She can only read and search files (`Read`, `Glob`, `Grep`), with a slim setup of about 5k tokens per question. Nothing that changes your machine yet.
+- **Careful by default.** She can only read and search files (`Read`, `Glob`, `Grep`), nothing that changes your machine yet, with a slim setup of about 5k tokens per question. She works from your home folder, but keys, credentials, shell history, app data and `.env` / `.pem` files are blocked by default (see Settings).
 
 ## Requirements
 
@@ -64,7 +64,9 @@ Every reply's text is sent to ElevenLabs when this is on. The monthly cap keeps 
 | `CLAUDE_LANG` | Speech recognition language, default `en-IN` (try `en-US`) |
 | `CLAUDE_KOKORO_VOICE`, `CLAUDE_KOKORO_SPEED` | Local voice and speed |
 | `CLAUDE_ENGINE=say` | Force the macOS voice |
-| `CLAUDE_CWD` | Folder Claude may read, default `~/Developer` |
+| `CLAUDE_CWD` | Folder she works from, default your home folder |
+| `CLAUDE_BLOCK_EXTRA` | More places she can't read, e.g. `~/Work/**,~/Notes/**` (comma separated) |
+| `CLAUDE_BLOCK_NONE=1` | Remove the default blocked list (not recommended) |
 | `CLAUDE_MUTE=1` | Print only, don't speak |
 | `CLAUDE_FOLLOWUP_SECONDS` | How long she keeps listening for a reply after answering, default `8` (`0` turns follow-ups off) |
 

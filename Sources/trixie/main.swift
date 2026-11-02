@@ -8,7 +8,8 @@ import ClaudeKit
 //   CLAUDE_HOTKEY=option+space   hold-to-talk shortcut
 //   CLAUDE_LANG=en-IN            speech recognition language (en-US, en-GB, ...)
 //   CLAUDE_KOKORO_VOICE=af_heart / CLAUDE_KOKORO_SPEED=1.0 / CLAUDE_ENGINE=say
-//   CLAUDE_MUTE / CLAUDE_CWD     as in trixie-talk
+//   CLAUDE_MUTE / CLAUDE_CWD     as in trixie-talk (CLAUDE_CWD defaults to your home folder)
+//   CLAUDE_BLOCK_EXTRA=~/a/**,~/b/**   more places she can't read;  CLAUDE_BLOCK_NONE=1 removes the default list
 //
 // `trixie --preview out.png` draws every mood to a picture and exits.
 
@@ -262,6 +263,10 @@ final class Controller {
 // MARK: - Start up
 
 var config = ClaudeConfig()
+if env["CLAUDE_BLOCK_NONE"] == "1" { config.blocked = [] }
+if let extra = env["CLAUDE_BLOCK_EXTRA"] {
+    config.blocked += extra.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+}
 if let cwd = env["CLAUDE_CWD"] {
     config.workingDirectory = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)
 }
@@ -317,7 +322,7 @@ Task { @MainActor in
     Keep.items = [pet, controller, menu, hotkey]
 
     print("Trixie — hold \(hotkeyText), speak, then let go. Quit from the menu bar icon or Ctrl-C.")
-    print(dim("Speech recognition runs \(listener.runsOnDevice ? "on your Mac" : "using Apple's servers"). Reading only: \(config.tools.joined(separator: ", ")).\n"))
+    print(dim("Speech recognition runs \(listener.runsOnDevice ? "on your Mac" : "using Apple's servers"). Reading only: \(config.tools.joined(separator: ", ")) in \(config.workingDirectory.path), \(config.blocked.count) sensitive places blocked.\n"))
     print(dim("Voice: \(await speaker.engineName)\n"))
 
     if wake == nil {

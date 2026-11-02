@@ -8,12 +8,17 @@ import ClaudeKit
 //   CLAUDE_VOICE=Samantha   which macOS voice to use (try `say -v '?'`)
 //   CLAUDE_RATE=190         words per minute
 //   CLAUDE_MUTE=1           print only, don't speak
-//   CLAUDE_CWD=~/Developer  the folder Claude can read
+//   CLAUDE_CWD=~            the folder Claude can read (default: your home folder)
+//   CLAUDE_BLOCK_EXTRA=...  more places to keep off-limits;  CLAUDE_BLOCK_NONE=1 removes the default list
 
 let env = ProcessInfo.processInfo.environment
 setvbuf(stdout, nil, _IOLBF, 0)   // show each line right away, even when output is redirected
 
 var config = ClaudeConfig()
+if env["CLAUDE_BLOCK_NONE"] == "1" { config.blocked = [] }
+if let extra = env["CLAUDE_BLOCK_EXTRA"] {
+    config.blocked += extra.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+}
 if let cwd = env["CLAUDE_CWD"] {
     config.workingDirectory = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)
 }
@@ -33,7 +38,7 @@ if let settings = KokoroSettings.detect(env), let helper = KokoroHelper(settings
 
 print(dim("Trixie — type a message, or /new to start over, /quit to leave."))
 print(dim("Voice: \(await speaker.engineName)"))
-print(dim("Reading only: \(config.tools.joined(separator: ", ")) in \(config.workingDirectory.path)\n"))
+print(dim("Reading only: \(config.tools.joined(separator: ", ")) in \(config.workingDirectory.path), \(config.blocked.count) sensitive places blocked\n"))
 
 while true {
     print("you> ", terminator: "")
