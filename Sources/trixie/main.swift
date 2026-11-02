@@ -66,7 +66,7 @@ final class Controller {
         wake?.onCancel = { [weak self] in
             guard let self else { return }
             print("\r\u{1B}[2K" + dim("(heard her name but no question)"))
-            self.busy = false; self.mood(.idle); self.updateWake()
+            self.confusedMoment()
         }
         // Fall asleep after a quiet while, then go away.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -131,6 +131,14 @@ final class Controller {
         }
     }
 
+    /// Didn't catch that, or something went wrong: just settle back to idle.
+    func confusedMoment() {
+        busy = false
+        updateWake()
+        mood(.idle)
+        touch()
+    }
+
     /// All done: a short happy moment, then back to idle.
     private func finished() {
         busy = false
@@ -177,8 +185,7 @@ final class Controller {
             guard !text.isEmpty else {
                 let level = String(format: "%.3f", listener.peakLevel)
                 print(dim("(didn't catch anything — mic peak \(level), recogniser \(listener.localeIdentifier) available=\(listener.isAvailable), error: \(listener.lastError ?? "none"))"))
-                mood(.idle)
-                busy = false; updateWake()
+                confusedMoment()
                 return
             }
             await runAsk(text)
@@ -210,6 +217,7 @@ final class Controller {
         print()
         turnRunning = false
         touch()
+        if r.failed && !Task.isCancelled { confusedMoment(); return }
         // If the voice is already quiet (or never spoke), celebrate now; otherwise
         // the "finished speaking" event does it.
         if !speaking, !Task.isCancelled { finished() }

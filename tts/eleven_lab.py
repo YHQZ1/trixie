@@ -6,8 +6,8 @@ import os, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from server import CloudVoice, chars_used
 
-SENTENCES = ["Oh, Hatch?", "Yeah, it's your deploy thing.",
-             "Kind of like Render, but everything goes into your own AWS account, not theirs.",
+SENTENCES = ["Oh, the forecast?", "Yeah, it's sunny all week.",
+             "Kind of warm too, so you probably won't need a jacket at all.",
              "Want me to dig into what's next?"]
 PARAGRAPH = " ".join(SENTENCES)
 

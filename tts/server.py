@@ -38,10 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Words the model tends to get wrong, spelled the way they should be said.
 PRONUNCIATIONS = {
     r"\bUttkarsh\b": "Utkarsh",
-    r"\bKprobe\b": "K probe",
-    r"\bkprobe\b": "K probe",
     r"\beBPF\b": "E B P F",
-    r"\bTraceLink\b": "Trace Link",
     r"\bkubectl\b": "kube control",
     r"\bK8s\b": "Kubernetes",
     r"\bGitHub\b": "Git Hub",

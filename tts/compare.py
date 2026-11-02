@@ -6,12 +6,10 @@ from kokoro_onnx import Kokoro
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from server import HERE, synthesize, trim
 
-WRITTEN = ("Hatch is your deploy tool, similar to Render, but it places applications into the user's own "
-           "AWS account instead of hosting them. It includes cost guardrails so that people do not receive "
-           "unexpected cloud bills. It is currently in Phase 2 of the roadmap.")
-SPOKEN = ("Oh, Hatch? Yeah, it's your deploy thing. Kind of like Render, but everything goes into your own "
-          "AWS account, not theirs. And it's got these cost guardrails, so you don't wake up to some crazy bill. "
-          "Right now it's in phase two. Want me to dig into what's next?")
+WRITTEN = ("The forecast for this week is sunny, with temperatures slightly above average. "
+           "It is not expected that you will require a jacket. Would you like further details?")
+SPOKEN = ("Oh, the forecast? Yeah, it's sunny all week. Kind of warm too, so you won't need a jacket. "
+          "Want me to dig into the details?")
 
 k = Kokoro(os.path.join(HERE, "kokoro-v1.0.onnx"), os.path.join(HERE, "voices-v1.0.bin"))
 clips = [

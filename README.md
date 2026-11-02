@@ -1,46 +1,90 @@
 # Trixie
 
-A little desktop pet you talk to. Native Swift, no web. Built on the `claude` CLI so it uses your own subscription.
+A little pixel pet that lives on your Mac desktop. Say **"hey Trixie"** (or hold a hotkey), ask her something, and she listens, thinks and answers out loud. Native Swift, no web, built on the `claude` CLI so it runs on your own Claude subscription.
 
-## Where it is
+![Trixie's moods](docs/moods.png)
 
-| Step | What | Status |
-|---|---|---|
-| 1 | Text brain: type, Claude answers, reply is spoken | done |
-| 2 | Voice in: hold a hotkey, speak, speech becomes text | done |
-| 3 | The pet window: pixel creature with listening / thinking / working / talking / happy / sleeping moods | done |
-| 3b | Natural voice: ElevenLabs (cloud) with Kokoro (local) as the fallback | done |
-| 4 | Tools: music, Mac control, calendar and mail, each behind a confirmation | next |
-| 5 | Wake word ("hey claude") | |
+## What she does
+
+- **Always listening, on your Mac only.** Say "hey Trixie, …" and she wakes up. Speech recognition runs on-device, and nothing leaves your laptop until she's addressed. Or hold **Option + Space** to talk instead.
+- **A pet with moods.** She pops in with a hop, perks up and listens, looks up while thinking, "types" while reading your files, moves her mouth while talking, and falls asleep when you leave her alone. Her eyes follow your cursor, and clicks pass through everything except the creature itself.
+- **Natural, streaming speech.** She says a short line before she goes off to read files, then speaks the answer sentence by sentence as it arrives. Choose a cloud voice ([ElevenLabs](https://elevenlabs.io)) or a free local one ([Kokoro](https://github.com/thewh1teagle/kokoro-onnx)). If the cloud voice fails or hits your monthly cap, she falls back to the local one automatically.
+- **Careful by default.** She can only read and search files (`Read`, `Glob`, `Grep`), with a slim setup of about 5k tokens per question. Nothing that changes your machine yet.
+
+## Requirements
+
+- macOS 14 or later, Apple silicon recommended
+- Swift 6 toolchain (the Xcode command-line tools are enough, no full Xcode needed)
+- The [`claude` CLI](https://docs.claude.com/en/docs/claude-code), installed and logged in
+- **Dictation turned on** in System Settings → Keyboard (Apple's on-device speech recogniser needs it)
 
 ## Run it
 
 ```
-./scripts/run.sh        # builds the app, starts it, shows its log. Hold Option+Space and talk.
-swift run trixie-talk   # the text-only version (step 1)
+git clone https://github.com/YHQZ1/trixie.git
+cd trixie
+./scripts/run.sh
 ```
 
-It must run as an app (`build/Trixie.app`) so macOS asks for microphone and speech permission.
-macOS Dictation has to be switched on (System Settings > Keyboard) for speech recognition to work.
+This builds `build/Trixie.app`, starts it and shows its log. macOS will ask for microphone and speech-recognition permission the first time. She must run as an app (not the bare binary) so those permissions work.
 
-### Voice
+A text-only version, handy for testing: `swift run trixie-talk`.
 
-- Cloud: ElevenLabs. Voice and settings are in `tts/voice.json`. The API key lives in the Keychain: `security add-generic-password -a "$USER" -s elevenlabs-api-key -w`. A monthly character cap (default 8000) keeps it free; past it, or if the network fails, the local Kokoro voice takes over.
-- Local: Kokoro via `tts/.venv` (model files `tts/kokoro-v1.0.onnx` and `tts/voices-v1.0.bin` are not in git).
-- Tools: `tts/eleven_tool.py` (find a voice, test a line, show usage), `tts/eleven_lab.py` (A/B settings), `tts/audition.py` (Kokoro voices).
+## Voices
 
-Optional settings: `CLAUDE_VOICE=Samantha`, `CLAUDE_RATE=190`, `CLAUDE_MUTE=1`, `CLAUDE_CWD=~/Developer`.
-Type `/new` for a fresh chat and `/quit` to leave. List voices with `say -v '?'`.
+Without any setup she uses the built-in macOS voice. For something natural:
+
+**Local (free, offline): Kokoro**
+
+```
+cd tts
+uv venv .venv --python 3.12
+uv pip install --python .venv/bin/python kokoro-onnx soundfile numpy
+curl -L -o kokoro-v1.0.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+curl -L -o voices-v1.0.bin   https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
+```
+
+Pick a voice with `CLAUDE_KOKORO_VOICE` (try `af_heart`, `af_nova`, `bf_emma`; audition them with `tts/audition.py`).
+
+**Cloud: ElevenLabs**
+
+1. Create an API key (Text to Speech access is enough) and store it in your Keychain, never in a file:
+   `security add-generic-password -a "$USER" -s elevenlabs-api-key -w`
+2. Pick a voice: `tts/.venv/bin/python tts/eleven_tool.py --use <voice name>`
+3. Tune `tts/voice.json` (model, stability, `monthly_character_cap`).
+
+Every reply's text is sent to ElevenLabs when this is on. The monthly cap keeps you inside a free plan; past it, she switches to the local voice.
+
+## Settings
+
+| Variable | What it does |
+|---|---|
+| `CLAUDE_HOTKEY` | Hold-to-talk shortcut, default `option+space` |
+| `CLAUDE_LANG` | Speech recognition language, default `en-IN` (try `en-US`) |
+| `CLAUDE_KOKORO_VOICE`, `CLAUDE_KOKORO_SPEED` | Local voice and speed |
+| `CLAUDE_ENGINE=say` | Force the macOS voice |
+| `CLAUDE_CWD` | Folder Claude may read, default `~/Developer` |
+| `CLAUDE_MUTE=1` | Print only, don't speak |
+
+The menu-bar icon has a switch for the always-on "hey Trixie" listening, and "Quit".
 
 ## How it works
 
-- `ClaudeKit/ClaudeSession.swift` starts the `claude` CLI per question, streams its answer, and keeps the conversation going with `--resume`.
-- It runs with a slim setup (only Read, Glob and Grep, no MCP servers, no skills) so each question costs about 5k tokens instead of 20k+. Read-only on purpose until confirmations exist.
-- `ClaudeKit/SpeechText.swift` cuts the stream into sentences and cleans markdown so it sounds natural.
-- `ClaudeKit/Speaker.swift` speaks sentences through macOS `say`.
-- Usage (5-hour and 7-day) comes back with every answer and is shown after each reply.
+- `ClaudeKit/ClaudeSession` runs `claude -p` with streaming JSON and `--resume` for memory.
+- `ClaudeKit/WakeListener` listens for the wake phrase on-device and gathers your question.
+- `ClaudeKit/VoiceListener` and `HotKey` handle push-to-talk.
+- `ClaudeKit/SpeechText` turns the stream into speakable sentences.
+- `tts/server.py` is the voice helper: ElevenLabs or Kokoro, sentence stitching, pronunciation fixes, a spending cap and automatic fallback.
+- `Sources/trixie` is the app: the pixel pet (SwiftUI Canvas), its window and the menu bar.
+
+`trixie --preview out.png` renders every mood to an image.
+
+## Status
+
+Working: wake word, push-to-talk, spoken answers, the pet, cloud and local voices. Next: letting her do things (music, Mac control, calendar), each behind a spoken confirmation.
 
 ## Notes
 
-- Don't use `claude --bare` here: it never reads your subscription login and would need an API key.
-- The pet is called Trixie. The pixel creature is a placeholder design; give it a distinct look before this goes public.
+This is an unofficial hobby project. It is not affiliated with or endorsed by Anthropic or ElevenLabs. "Claude" is a trademark of Anthropic. It only drives the official `claude` CLI that you have installed and signed in to yourself.
+
+Voices by [Kokoro](https://github.com/hexgrad/kokoro) (via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)) and [ElevenLabs](https://elevenlabs.io).

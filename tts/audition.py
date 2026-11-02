@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from server import HERE, synthesize, trim  # noqa: E402
 
 TEXT = (
-    "Hey Uttkarsh, I looked through your folders. You've got three selected projects: "
-    "Escrow, Hatch and Kprobe. Honestly, Hatch is the one I'd start with, if you're asking me."
+    "Hey there, I looked through your folders. You've got three projects in here. "
+    "Honestly, the first one is where I'd start, if you're asking me."
 )
 DEFAULT = [
     ("af_heart", "en-us"), ("af_bella", "en-us"), ("af_nicole", "en-us"), ("af_sarah", "en-us"),

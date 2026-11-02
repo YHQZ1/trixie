@@ -7,8 +7,7 @@ import Speech
 public final class VoiceListener: @unchecked Sendable {
     /// Words the recogniser should expect, so "Kubernetes" doesn't become "cooper nettys".
     public static let vocabulary = [
-        "Trixie", "Claude", "Kubernetes", "Hatch", "Kprobe", "Escrow", "Provenance", "TraceLink", "Uttkarsh",
-        "GitHub", "LinkedIn", "Kafka", "Postgres", "Docker", "Swift", "Rust", "eBPF",
+        "Trixie", "Claude", "Kubernetes", "GitHub", "Docker", "Swift", "Rust", "Postgres", "Kafka", "eBPF",
     ]
 
     public var onPartial: ((String) -> Void)?

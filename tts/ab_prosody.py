@@ -9,7 +9,7 @@ from server import HERE, synthesize, shape_end, trim
 voice = sys.argv[1] if len(sys.argv) > 1 else "af_heart"
 k = Kokoro(os.path.join(HERE, "kokoro-v1.0.onnx"), os.path.join(HERE, "voices-v1.0.bin"))
 LINES = ["Does that sound like a good plan to you?",
-         "Oh, Hatch? Yeah, it's your deploy thing.",
+         "Oh, the weather? Yeah, it's looking nice today.",
          "You want me to dig into what's next?",
          "Okay, so it's in phase two right now."]
 def play(x, sr):
