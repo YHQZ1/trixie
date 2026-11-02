@@ -1,0 +1,4 @@
+.venv/
+*.onnx
+*.bin
+__pycache__/

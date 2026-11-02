@@ -1,0 +1,16 @@
+{
+  "provider": "elevenlabs",
+  "voice_id": "cgSgspJ2msm6clMCkdW9",
+  "voice_name": "Jessica",
+  "model": "eleven_multilingual_v2",
+  "stability": 0.45,
+  "similarity_boost": 0.75,
+  "style": 0.0,
+  "use_speaker_boost": true,
+  "speed": 1.0,
+  "monthly_character_cap": 8000,
+  "pronounce": {
+    "Utkarsh": "उत्कर्ष",
+    "Uttkarsh": "उत्कर्ष"
+  }
+}

@@ -1,0 +1,207 @@
+import AppKit
+import ClaudeKit
+
+// Step 3: the pet. Hold the hotkey and a little creature appears, listens, thinks,
+// talks back and then goes to sleep. Pressing the hotkey again interrupts it.
+//
+// Settings (environment variables):
+//   CLAUDE_HOTKEY=option+space   hold-to-talk shortcut
+//   CLAUDE_LANG=en-IN            speech recognition language (en-US, en-GB, ...)
+//   CLAUDE_KOKORO_VOICE=af_heart / CLAUDE_KOKORO_SPEED=1.0 / CLAUDE_ENGINE=say
+//   CLAUDE_MUTE / CLAUDE_CWD     as in trixie-talk
+//
+// `trixie --preview out.png` draws every mood to a picture and exits.
+
+let env = ProcessInfo.processInfo.environment
+setvbuf(stdout, nil, _IOLBF, 0)   // show each line right away, even when output is redirected
+
+if let i = CommandLine.arguments.firstIndex(of: "--preview"), i + 1 < CommandLine.arguments.count {
+    MainActor.assumeIsolated { PetPreview.render(to: CommandLine.arguments[i + 1]) }
+    exit(0)
+}
+
+func dim(_ s: String) -> String { "\u{1B}[2m\(s)\u{1B}[0m" }
+
+@MainActor
+final class Controller {
+    let session: ClaudeSession
+    let speaker: Speaker
+    let listener: VoiceListener
+    let pet: PetWindowController
+    var turn: Task<Void, Never>?
+    var settle: Task<Void, Never>?
+    var recording = false
+    var turnRunning = false
+    var speaking = false
+    var lastActivity = Date()
+    var timer: Timer?
+
+    init(session: ClaudeSession, speaker: Speaker, listener: VoiceListener, pet: PetWindowController) {
+        self.session = session; self.speaker = speaker; self.listener = listener; self.pet = pet
+        listener.onPartial = { text in
+            print("\r\u{1B}[2K" + dim("… \(text)"), terminator: ""); fflush(stdout)
+        }
+        // Fall asleep after a quiet while, then go away.
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkIdle() }
+        }
+    }
+
+    private func mood(_ m: PetMood) { pet.model.mood = m }
+    private func touch() { lastActivity = Date() }
+
+    func showPet() {
+        pet.show(); mood(.idle); touch()
+    }
+
+    private func checkIdle() {
+        guard pet.isShown, !recording, !turnRunning, !speaking else { return }
+        let quiet = Date().timeIntervalSince(lastActivity)
+        if quiet > 90 { pet.hide() }
+        else if quiet > 30, pet.model.mood == .idle { mood(.sleeping) }
+    }
+
+    func speakingChanged(_ on: Bool) {
+        speaking = on
+        touch()
+        if on {
+            settle?.cancel()
+            mood(.talking)
+        } else if turnRunning {
+            mood(.thinking)           // between sentences, still working on the rest
+        } else {
+            finished()
+        }
+    }
+
+    /// All done: a short happy moment, then back to idle.
+    private func finished() {
+        mood(.happy)
+        settle?.cancel()
+        settle = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            if !Task.isCancelled, self?.pet.model.mood == .happy { self?.mood(.idle) }
+            self?.touch()
+        }
+    }
+
+    func pressed() {
+        guard !recording else { return }
+        // Pressing again interrupts whatever Claude is saying or doing.
+        turn?.cancel(); session.cancel(); settle?.cancel()
+        turnRunning = false
+        let speaker = self.speaker
+        Task { await speaker.stop() }
+        pet.show()
+        do {
+            try listener.start()
+            recording = true
+            mood(.listening); touch()
+            NSSound(named: "Tink")?.play()
+            print(dim("listening…"))
+        } catch {
+            mood(.idle)
+            print("Couldn't start the microphone: \(error.localizedDescription)")
+        }
+    }
+
+    func released() {
+        guard recording else { return }
+        recording = false
+        NSSound(named: "Pop")?.play()
+        mood(.thinking); touch()
+        turn = Task { [self] in
+            let text = await listener.finish().trimmingCharacters(in: .whitespacesAndNewlines)
+            print("\r\u{1B}[2K", terminator: "")
+            guard !text.isEmpty else {
+                let level = String(format: "%.3f", listener.peakLevel)
+                print(dim("(didn't catch anything — mic peak \(level), recogniser \(listener.localeIdentifier) available=\(listener.isAvailable), error: \(listener.lastError ?? "none"))"))
+                mood(.idle)
+                return
+            }
+            print("you> \(text)")
+            print("claude> ", terminator: ""); fflush(stdout)
+            turnRunning = true
+            let r = await runTurn(
+                text, session: session, speaker: speaker,
+                minSentence: await speaker.usesCloud ? 34 : 14,
+                onText: { print($0, terminator: ""); fflush(stdout) },
+                onTool: { [self] name in
+                    print(dim("[\(name)] "), terminator: ""); fflush(stdout)
+                    Task { @MainActor in if !self.speaking { self.mood(.working) } }
+                }
+            )
+            print()
+            if r.failed && !Task.isCancelled { print(dim("(something went wrong — is `claude` installed and logged in?)")) }
+            if let u = r.usage { print(dim(u)) }
+            print()
+            turnRunning = false
+            touch()
+            // If the voice is already quiet (or never spoke), celebrate now; otherwise
+            // the "finished speaking" event does it.
+            if !speaking, !Task.isCancelled { finished() }
+        }
+    }
+}
+
+// MARK: - Start up
+
+var config = ClaudeConfig()
+if let cwd = env["CLAUDE_CWD"] {
+    config.workingDirectory = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)
+}
+let session = ClaudeSession(config: config)
+let speaker = Speaker(
+    voice: env["CLAUDE_VOICE"],
+    rate: Int(env["CLAUDE_RATE"] ?? "") ?? 190,
+    muted: env["CLAUDE_MUTE"] == "1"
+)
+
+// Use the natural Kokoro voice when it's installed; otherwise the macOS voice.
+if let settings = KokoroSettings.detect(env), let helper = KokoroHelper(settings: settings) {
+    Task { await speaker.attach(helper) }
+}
+
+let hotkeyText = env["CLAUDE_HOTKEY"] ?? "option+space"
+guard let combo = HotKey.parse(hotkeyText) else {
+    print("Couldn't understand CLAUDE_HOTKEY=\(hotkeyText). Try something like option+space or ctrl+shift+k.")
+    exit(1)
+}
+guard let listener = VoiceListener(locale: Locale(identifier: env["CLAUDE_LANG"] ?? "en-IN")) else {
+    print("Speech recognition isn't available for that language."); exit(1)
+}
+
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+signal(SIGINT) { _ in exit(0) }
+
+@MainActor enum Keep { static var items: [AnyObject] = [] }
+
+Task { @MainActor in
+    print(dim("Asking macOS for microphone and speech permission (click Allow if it asks)…"))
+    if let problem = await VoiceListener.requestPermissions() { print(problem); exit(1) }
+
+    let pet = PetWindowController()
+    let controller = Controller(session: session, speaker: speaker, listener: listener, pet: pet)
+    await speaker.setSpeakingHandler { on in
+        Task { @MainActor in controller.speakingChanged(on) }
+    }
+    let menu = StatusMenu(
+        onShow: { controller.showPet() },
+        onQuit: { Task { await speaker.shutdown(); exit(0) } }
+    )
+    guard let hotkey = HotKey(keyCode: combo.keyCode, modifiers: combo.modifiers) else {
+        print("Couldn't register \(hotkeyText) — another app may be using it. Set CLAUDE_HOTKEY to something else.")
+        exit(1)
+    }
+    hotkey.onPress = { controller.pressed() }
+    hotkey.onRelease = { controller.released() }
+    Keep.items = [pet, controller, menu, hotkey]
+
+    print("Trixie — hold \(hotkeyText), speak, then let go. Quit from the menu bar icon or Ctrl-C.")
+    print(dim("Speech recognition runs \(listener.runsOnDevice ? "on your Mac" : "using Apple's servers"). Reading only: \(config.tools.joined(separator: ", ")).\n"))
+    print(dim("Voice: \(await speaker.engineName)\n"))
+
+    controller.showPet()   // say hello once so you can see it's alive
+}
+app.run()
