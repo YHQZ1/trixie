@@ -40,8 +40,8 @@ final class PetWindowController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.contentView = PetHostingView(rootView: PetView(model: model))
-        panel.delegate = self
         placeWindow()
+        panel.delegate = self       // only start remembering positions once she's placed
     }
 
     func show() {
@@ -78,14 +78,17 @@ final class PetWindowController: NSObject, NSWindowDelegate {
     // MARK: - Remembering where you left it
 
     private func placeWindow() {
+        // Wherever you last dragged her, if that's still on a screen.
         if let saved = UserDefaults.standard.string(forKey: positionKey) {
             let origin = NSPointFromString(saved)
             if NSScreen.screens.contains(where: { $0.frame.insetBy(dx: -50, dy: -50).contains(origin) }) {
                 panel.setFrameOrigin(origin); return
             }
         }
+        // Otherwise: bottom-right, with her feet resting on the edge of the Dock.
         let area = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-        panel.setFrameOrigin(NSPoint(x: area.maxX - PetView.size.width - 24, y: area.minY + 8))
+        let spaceUnderFeet: CGFloat = 36        // transparent room under her feet inside the window
+        panel.setFrameOrigin(NSPoint(x: area.maxX - PetView.size.width + 22, y: area.minY - spaceUnderFeet))
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -101,6 +104,7 @@ final class StatusMenu: NSObject {
     private let onQuit: () -> Void
     private let onWakeToggle: (Bool) -> Void
     private let wakeItem = NSMenuItem(title: "Listen for “Hey Trixie”", action: nil, keyEquivalent: "")
+    private let loginItem = NSMenuItem(title: "Start Trixie at login", action: nil, keyEquivalent: "")
 
     init(wakeOn: Bool, onShow: @escaping () -> Void, onWakeToggle: @escaping (Bool) -> Void, onQuit: @escaping () -> Void) {
         self.onShow = onShow; self.onQuit = onQuit; self.onWakeToggle = onWakeToggle
@@ -114,11 +118,20 @@ final class StatusMenu: NSObject {
         wakeItem.target = self
         wakeItem.action = #selector(toggleWake)
         wakeItem.state = wakeOn ? .on : .off
-        menu.addItem(show); menu.addItem(wakeItem); menu.addItem(.separator()); menu.addItem(quit)
+        loginItem.target = self
+        loginItem.action = #selector(toggleLogin)
+        loginItem.state = LoginItem.isEnabled ? .on : .off
+        menu.addItem(show); menu.addItem(wakeItem); menu.addItem(loginItem); menu.addItem(.separator()); menu.addItem(quit)
         item.menu = menu
     }
 
     @objc private func showPet() { onShow() }
+    @objc private func toggleLogin() {
+        let turnOn = !LoginItem.isEnabled
+        do { try LoginItem.set(turnOn) } catch { print("Couldn't change the login item: \(error.localizedDescription)") }
+        loginItem.state = LoginItem.isEnabled ? .on : .off
+        print("Start at login: \(LoginItem.describe())")
+    }
     @objc private func toggleWake() {
         let on = wakeItem.state != .on
         wakeItem.state = on ? .on : .off

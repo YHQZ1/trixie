@@ -21,6 +21,11 @@ if let i = CommandLine.arguments.firstIndex(of: "--preview"), i + 1 < CommandLin
     exit(0)
 }
 
+if let i = CommandLine.arguments.firstIndex(of: "--login"), i + 1 < CommandLine.arguments.count {
+    LoginItem.handle(CommandLine.arguments[i + 1])
+    exit(0)
+}
+
 func dim(_ s: String) -> String { "\u{1B}[2m\(s)\u{1B}[0m" }
 
 @MainActor
